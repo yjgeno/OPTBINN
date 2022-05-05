@@ -54,7 +54,14 @@ def glycolysis_model(
     return odeint(func, x0, t)
 
 
-def pinn(data_t, data_y, noise):
+def binn(data_t, 
+         data_y, 
+         noise: float = 0.,
+         n_epochs: int = 900000,
+         optimizer: str = "adam",
+         loss_fn: str = "MSE",
+         lr: float = 1e-3,
+         verbose: bool = True):
     J0 = tf.math.softplus(tf.Variable(0, trainable=True, dtype=tf.float32))
     k1 = tf.math.softplus(tf.Variable(0, trainable=True, dtype=tf.float32)) * 100
     k2 = tf.math.softplus(tf.Variable(0, trainable=True, dtype=tf.float32))
@@ -173,35 +180,34 @@ def pinn(data_t, data_y, noise):
     # Large noise requires small data_weights
     if noise >= 0.1:
         data_weights = [w / 10 for w in data_weights]
-    model.compile("adam", lr=1e-3, loss_weights=[0] * 7 + bc_weights + data_weights)
+    model.compile(optimizer, loss=loss_fn, lr=lr, loss_weights=[0] * 7 + bc_weights + data_weights)
     model.train(epochs=1000, display_every=1000) # step1 training: without ODE loss
     ode_weights = [1e-3, 1e-3, 1e-2, 1e-2, 1e-2, 1e-3, 1]
     # Large noise requires large ode_weights
     if noise > 0:
         ode_weights = [10 * w for w in ode_weights]
-    model.compile("adam", lr=1e-3, loss_weights=ode_weights + bc_weights + data_weights)
+    model.compile(optimizer, loss=loss_fn, lr=lr, loss_weights=ode_weights + bc_weights + data_weights)
     losshistory, train_state = model.train(
-        epochs=900000 if noise == 0 else 2000000,
+        epochs=n_epochs,
         display_every=1000,
         callbacks=callbacks,
         disregard_previous_best=True,
         # model_restore_path="./model/model.ckpt-"
     ) # step2 training
-    dde.saveplot(losshistory, train_state, issave=False, isplot=True)
+    dde.saveplot(losshistory, train_state, issave=True, isplot=False)
     var_list = [model.sess.run(v) for v in var_list]
     return var_list
 
 
-def main():
+def main(args):
     t = np.arange(0, 10, 0.005)[:, None]
-    noise = 0.1
 
     # Data
     y = glycolysis_model(np.ravel(t))
     np.savetxt("glycolysis.dat", np.hstack((t, y)))
     # Add noise
-    if noise > 0:
-        std = noise * y.std(0)
+    if args.noise > 0:
+        std = args.noise * y.std(0)
         y[1:-1, :] += np.random.normal(0, std, (y.shape[0] - 2, y.shape[1]))
         np.savetxt("glycolysis_noise.dat", np.hstack((t, y)))
 
@@ -214,7 +220,12 @@ def main():
     logger.addHandler(console_handler)
 
     # Train
-    var_list = pinn(t, y, noise)
+    var_list = binn(t, y, 
+                    noise = args.noise,
+                    n_epochs = args.n_epochs,
+                    optimizer = args.optimizer,
+                    loss_fn = args.loss_fn,
+                    lr = args.learning_rate)
     var_names = ['J0', 'k1', 'k2', 'k3', 'k4', 'k5', 'k6', 'k', 'kappa', 'q', 'K1', 'psi', 'N', 'A']
     for name, v in zip(var_names, var_list):
         logger.info(f'{name}: {v}\n')
@@ -226,5 +237,29 @@ def main():
 
 if __name__ == "__main__":
     import sys
-    sys.exit(main())
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    # parser.add_argument('--log_dir')
+    parser.add_argument('--noise', type = float, default = 0.)
+    parser.add_argument('-n', '--n_epochs', type = int, default = 900000) # 900000 if noise == 0 else 2000000
+    parser.add_argument('-O', '--optimizer', type = str, default = "adam")
+    parser.add_argument('-L', '--loss_fn', type = str, default = "MSE")
+    parser.add_argument('-lr', '--learning_rate', type = float, default = 0.001)
+    # parser.add_argument('-v', '--verbose', action = 'store_true')
+
+    args = parser.parse_args()
+    tf.random.set_random_seed(1234)
+    sys.exit(main(args))
+
+
+# def _get_optimizer(name, lr):
+#     return {
+#         "sgd": tf.train.GradientDescentOptimizer(lr),
+#         "sgdnesterov": tf.train.MomentumOptimizer(lr, 0.9, use_nesterov=True),
+#         "adagrad": tf.train.AdagradOptimizer(0.01),
+#         "adadelta": tf.train.AdadeltaOptimizer(),
+#         "rmsprop": tf.train.RMSPropOptimizer(lr),
+#         "adam": tf.train.AdamOptimizer(lr),
+#     }[name]
     
